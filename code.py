@@ -7,7 +7,7 @@ from supabase import create_client, Client
 import uuid
 
 # ==============================
-# 🔐 SUPABASE CONFIG
+# 🔐 SUPABASE CONFIG yay
 # ==============================
 # Ensure these are set in your .streamlit/secrets.toml
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
