@@ -1,19 +1,21 @@
 import streamlit as st
 import numpy as np
-import tensorflow as tf  # Fixed import
-from tensorflow.keras.models import load_model as keras_load_model # Renamed to avoid conflict
-from PIL import Image
-from supabase import create_client, Client
+from tensorflow.keras.models import load_model
+from PIL import Image, ImageOps
+from supabase import create_client
 import uuid
+import io
 
-# ==============================
-# 🔐 SUPABASE CONFIG
-# ==============================
-# Ensure these are set in your .streamlit/secrets.toml
-SUPABASE_URL = st.secrets["SUPABASE_URL"]
-SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+# =====================================================
+# CONFIG
+# =====================================================
+st.set_page_config(page_title="Digitales Fundbüro", layout="wide")
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Supabase Secrets (Streamlit Cloud kompatibel)
+SUPABASE_URL = st.secrets["supabase"]["url"]
+SUPABASE_KEY = st.secrets["supabase"]["key"]
+
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ==============================
 # 🧠 MODEL LOADING
