@@ -17,118 +17,154 @@ SUPABASE_KEY = st.secrets["supabase"]["key"]
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ==============================
-# 🧠 MODEL LOADING
-# ==============================
-
+# =====================================================
+# LOAD MODEL
+# =====================================================
 @st.cache_resource
-def load_my_model():
-    # Use the keras load_model function, not the wrapper function name
-    return keras_load_model("keras_model.h5")
+def load_tm_model():
+    model = load_model("keras_model.h5", compile=False)
+    class_names = open("labels.txt", "r").readlines()
+    return model, class_names
 
-model = load_my_model()
+model, class_names = load_tm_model()
 
-def load_labels():
-    with open("labels.txt", "r") as f:
-        # Removes the index numbers if your labels.txt has them (e.g., "0 T-Shirt")
-        return [line.strip() for line in f.readlines()]
+# =====================================================
+# IMAGE CLASSIFICATION
+# =====================================================
+def classify_image(image):
+    size = (224, 224)
+    image = ImageOps.fit(image, size, Image.Resampling.LANCZOS)
 
-labels = load_labels()
+    image_array = np.asarray(image)
+    normalized = (image_array.astype(np.float32) / 127.5) - 1
 
-# ==============================
-# 🎨 UI
-# ==============================
+    data = np.ndarray((1, 224, 224, 3), dtype=np.float32)
+    data[0] = normalized
 
-st.title("👕 KI Kleidungs-Matcher")
+    prediction = model.predict(data)
+    index = np.argmax(prediction)
+    confidence = float(prediction[0][index])
+    predicted_class = class_names[index][2:].strip()
 
-tab1, tab2 = st.tabs(["🔍 Kleidung finden", "🚨 Verlorenes melden"])
+    return predicted_class, confidence
 
-# ==========================================================
-# TAB 1 – MATCHING
-# ==========================================================
+# =====================================================
+# UPLOAD IMAGE TO SUPABASE STORAGE
+# =====================================================
+def upload_image(image, predicted_class):
 
-with tab1:
-    uploaded_file = st.file_uploader("Bild hochladen", type=["jpg", "jpeg", "png"])
-    color_filter = st.selectbox(
-        "Nach Farbe filtern",
-        ["Alle", "Blau", "Rot", "Schwarz", "Weiß", "Grün"]
+    filename = f"{predicted_class}/{uuid.uuid4()}.jpg"
+
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG")
+    buffer.seek(0)
+
+    supabase.storage.from_("fundbilder").upload(
+        filename,
+        buffer.getvalue(),
+        {"content-type": "image/jpeg"}
     )
 
-    if uploaded_file is not None:
-        image = Image.open(uploaded_file).convert("RGB")
-        st.image(image, caption="Hochgeladenes Bild", use_container_width=True)
+    public_url = supabase.storage.from_("fundbilder").get_public_url(filename)
 
-        # Preprocessing
-        img = image.resize((224, 224))
-        img_array = np.array(img)
-        img_array = img_array.astype(np.float32) / 127.5 - 1
-        img_array = np.expand_dims(img_array, axis=0)
+    return public_url
 
-        # Prediction
-        prediction = model.predict(img_array)
-        index = np.argmax(prediction)
-        predicted_class = labels[index]
-        confidence = prediction[0][index]
+# =====================================================
+# SAVE METADATA
+# =====================================================
+def save_metadata(image_url, predicted_class, confidence, tag):
 
-        st.success(f"Erkannte Kategorie: {predicted_class} ({confidence*100:.2f}%)")
+    data = {
+        "image_url": image_url,
+        "predicted_class": predicted_class,
+        "confidence": confidence,
+        "tag": tag
+    }
 
-        # Database Query
-        query = supabase.table("clothes").select("*").eq("category", predicted_class).eq("status", "found")
+    supabase.table("fundstuecke").insert(data).execute()
 
-        if color_filter != "Alle":
-            query = query.eq("color", color_filter)
+# =====================================================
+# LOAD ENTRIES
+# =====================================================
+def load_entries(class_filter=None, tag_filter=None):
 
-        response = query.execute()
-        results = response.data
+    query = supabase.table("fundstuecke").select("*").order("created_at", desc=True)
 
-        st.subheader("🛍️ Gefundene Matches")
+    if class_filter and class_filter != "Alle":
+        query = query.eq("predicted_class", class_filter)
 
-        if not results:
-            st.warning("Keine passenden Kleidungsstücke gefunden.")
-        else:
-            for item in results:
-                st.write(f"### {item['name']}")
-                st.write(f"Farbe: {item['color']}")
-                st.image(item["image_url"], width=200)
+    if tag_filter and tag_filter != "Alle":
+        query = query.eq("tag", tag_filter)
+
+    response = query.execute()
+    return response.data
+
+# =====================================================
+# SIDEBAR NAVIGATION
+# =====================================================
+st.sidebar.title("Navigation")
+page = st.sidebar.radio("Seite wählen", ["Neuer Fund", "Galerie"])
+
+# =====================================================
+# PAGE 1 – NEUER FUND
+# =====================================================
+if page == "Neuer Fund":
+
+    st.title("📦 Neuer Fund")
+
+    uploaded_file = st.file_uploader("Bild hochladen", type=["jpg", "jpeg", "png"])
+    camera_file = st.camera_input("Oder Foto aufnehmen")
+
+    image_file = uploaded_file if uploaded_file else camera_file
+
+    if image_file:
+        image = Image.open(image_file).convert("RGB")
+        st.image(image, caption="Vorschau", use_column_width=True)
+
+        predicted_class, confidence = classify_image(image)
+
+        st.subheader("🤖 KI-Erkennung")
+        st.write(f"**Klasse:** {predicted_class}")
+        st.write(f"Confidence: {round(confidence * 100, 2)} %")
+
+        tag = st.selectbox(
+            "Farb-Tag auswählen",
+            ["rot", "blau", "grün", "gelb", "schwarz", "weiß"]
+        )
+
+        if st.button("Speichern"):
+            image_url = upload_image(image, predicted_class)
+            save_metadata(image_url, predicted_class, confidence, tag)
+            st.success("Fund erfolgreich gespeichert!")
+
+# =====================================================
+# PAGE 2 – GALERIE
+# =====================================================
+if page == "Galerie":
+
+    st.title("🖼 Galerie")
+
+    class_filter = st.selectbox(
+        "Nach Klasse filtern",
+        ["Alle", "Hoodie", "Pants", "Shoes"]
+    )
+
+    tag_filter = st.selectbox(
+        "Nach Farb-Tag filtern",
+        ["Alle", "rot", "blau", "grün", "gelb", "schwarz", "weiß"]
+    )
+
+    entries = load_entries(class_filter, tag_filter)
+
+    if not entries:
+        st.info("Keine Einträge gefunden.")
+    else:
+        cols = st.columns(3)
+
+        for i, entry in enumerate(entries):
+            with cols[i % 3]:
+                st.image(entry["image_url"], use_column_width=True)
+                st.write(f"**Klasse:** {entry['predicted_class']}")
+                st.write(f"Confidence: {round(entry['confidence'] * 100, 2)} %")
+                st.write(f"Farbe: {entry['tag']}")
                 st.markdown("---")
-
-# ==========================================================
-# TAB 2 – REPORT LOST
-# ==========================================================
-
-with tab2:
-    st.subheader("Verlorenes Kleidungsstück melden")
-
-    name = st.text_input("Name / Beschreibung")
-    category = st.selectbox("Kategorie", labels, key="cat_box")
-    color = st.selectbox("Farbe", ["Blau", "Rot", "Schwarz", "Weiß", "Grün"], key="color_box")
-    lost_image = st.file_uploader("Bild hochladen", type=["jpg", "jpeg", "png"], key="lost_upload")
-
-    if st.button("🚨 Als verloren melden"):
-        if name and lost_image:
-            file_bytes = lost_image.read()
-            file_name = f"{uuid.uuid4()}.jpg"
-
-            # Upload to Supabase Storage
-            try:
-                supabase.storage.from_("clothes-images").upload(file_name, file_bytes)
-                
-                # Get Public URL
-                res = supabase.storage.from_("clothes-images").get_public_url(file_name)
-                # Handle different library versions of get_public_url
-                public_url = res if isinstance(res, str) else res.public_url
-
-                # Insert into Database
-                supabase.table("clothes").insert({
-                    "name": name,
-                    "category": category,
-                    "color": color,
-                    "image_url": public_url,
-                    "status": "lost"
-                }).execute()
-
-                st.success("Kleidungsstück erfolgreich gemeldet!")
-            except Exception as e:
-                st.error(f"Fehler beim Upload: {e}")
-        else:
-            st.error("Bitte alle Felder ausfüllen.")
