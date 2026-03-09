@@ -1,7 +1,7 @@
 import streamlit as st
+import numpy as np
 import tensorflow as tf
 from tensorflow.keras.models import load_model
-import numpy as np
 from PIL import Image
 from supabase import create_client, Client
 import uuid
